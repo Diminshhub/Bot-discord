@@ -4,8 +4,10 @@ import json
 import time
 import requests
 import websocket
-from keep_alive import keep_alive
+from threading import Thread
+from keep_alive import keep_alive  # Certifique-se de que este módulo está configurado para manter o servidor ativo.
 
+# Carrega tokens e configurações do ambiente
 def load_tokens():
     tokens_config = []
     for key in os.environ:
@@ -14,11 +16,15 @@ def load_tokens():
             status = os.getenv(f"STATUS{token_index}", "online")
             custom_status = os.getenv(f"CUSTOM_STATUS{token_index}", "")
             join_call = os.getenv(f"JOIN_CALL{token_index}", "true").lower() == "true"
+            channel_id = os.getenv(f"CHANNEL_ID{token_index}")
+            guild_id = os.getenv(f"GUILD_ID{token_index}")
             tokens_config.append({
                 "token": os.getenv(key),
                 "status": status,
                 "custom_status": custom_status,
-                "join_call": join_call
+                "join_call": join_call,
+                "channel_id": channel_id,
+                "guild_id": guild_id
             })
     return tokens_config
 
@@ -27,97 +33,89 @@ if not tokens_config:
     print("[ERROR] No tokens found in environment variables. Please add TOKEN1, TOKEN2, etc.")
     sys.exit()
 
+# Valida o token com a API do Discord
 def validate_token(token):
     headers = {"Authorization": token, "Content-Type": "application/json"}
-    validate = requests.get("https://canary.discordapp.com/api/v9/users/@me", headers=headers)
+    validate = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
     if validate.status_code != 200:
         print(f"[ERROR] Invalid token: {token}")
         return None
     return validate.json()
 
-def onliner(token, status, custom_status):
-    ws = websocket.WebSocket()
-    ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-    start = json.loads(ws.recv())
-    heartbeat = start["d"]["heartbeat_interval"]
-    
-    auth = {
-        "op": 2,
-        "d": {
-            "token": token,
-            "properties": {
-                "$os": "Windows 10",
-                "$browser": "Google Chrome",
-                "$device": "Windows",
-            },
-            "presence": {"status": status, "afk": False},
-        },
-        "s": None,
-        "t": None,
-    }
-    ws.send(json.dumps(auth))
-    
-    cstatus = {
-        "op": 3,
-        "d": {
-            "since": 0,
-            "activities": [
-                {
-                    "type": 4,
-                    "state": custom_status,
-                    "name": "Custom Status",
-                    "id": "custom",
+# Mantém o bot online e envia batidas de coração
+def onliner(token, status, custom_status, channel_id=None, guild_id=None):
+    while True:
+        try:
+            ws = websocket.WebSocket()
+            ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+            start = json.loads(ws.recv())
+            heartbeat = start["d"]["heartbeat_interval"]
+            
+            # Autenticação inicial
+            auth = {
+                "op": 2,
+                "d": {
+                    "token": token,
+                    "properties": {
+                        "$os": "Windows 10",
+                        "$browser": "Google Chrome",
+                        "$device": "Windows",
+                    },
+                    "presence": {"status": status, "afk": False},
+                },
+            }
+            ws.send(json.dumps(auth))
+            
+            # Atualização de status personalizado
+            cstatus = {
+                "op": 3,
+                "d": {
+                    "since": 0,
+                    "activities": [
+                        {
+                            "type": 4,
+                            "state": custom_status,
+                            "name": "Custom Status",
+                            "id": "custom",
+                        }
+                    ],
+                    "status": status,
+                    "afk": False,
+                },
+            }
+            ws.send(json.dumps(cstatus))
+            
+            # Se configurado, entra no canal de voz
+            if channel_id and guild_id:
+                voice_state_update = {
+                    "op": 4,
+                    "d": {
+                        "guild_id": guild_id,
+                        "channel_id": channel_id,
+                        "self_mute": True,
+                        "self_deaf": False,
+                    },
                 }
-            ],
-            "status": status,
-            "afk": False,
-        },
-    }
-    ws.send(json.dumps(cstatus))
-    
-    try:
-        while True:
-            # Envia heartbeat para manter a conexão
-            online = {"op": 1, "d": None}
-            ws.send(json.dumps(online))
-            time.sleep(max(40, heartbeat / 1000))
-    except websocket.WebSocketConnectionClosedException:
-        print(f"[ERROR] Connection closed for token {token[:10]}... Reconnecting.")
-        onliner(token, status, custom_status)
+                ws.send(json.dumps(voice_state_update))
+                print(f"Token {token[:10]}... joined voice channel {channel_id} in guild {guild_id}.")
+            
+            # Mantém a conexão enviando heartbeat regularmente
+            while True:
+                ws.send(json.dumps({"op": 1, "d": None}))
+                time.sleep(max(heartbeat / 1000, 40))  # Garante um intervalo de no máximo 40 segundos
+        except Exception as e:
+            print(f"[ERROR] Connection lost for token {token[:10]}... Reconnecting. Error: {e}")
+            time.sleep(5)  # Aguarda 5 segundos antes de tentar reconectar
 
-def join_voice_channel(token, channel_id, guild_id):
-    ws = websocket.WebSocket()
-    ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-    start = json.loads(ws.recv())
-    auth = {
-        "op": 2,
-        "d": {
-            "token": token,
-            "properties": {
-                "$os": "Windows 10",
-                "$browser": "Google Chrome",
-                "$device": "Windows",
-            },
-        },
-    }
-    ws.send(json.dumps(auth))
-    voice_state_update = {
-        "op": 4,
-        "d": {
-            "guild_id": guild_id,
-            "channel_id": channel_id,
-            "self_mute": True,
-            "self_deaf": False,
-        },
-    }
-    ws.send(json.dumps(voice_state_update))
-    print(f"Token {token[:10]}... joined voice channel {channel_id} and stayed muted.")
-
+# Inicia múltiplos bots em threads separadas
 def run_onliner():
+    threads = []
     for config in tokens_config:
         token = config["token"]
         status = config["status"]
         custom_status = config["custom_status"]
+        channel_id = config.get("channel_id")
+        guild_id = config.get("guild_id")
         
         userinfo = validate_token(token)
         if userinfo:
@@ -127,14 +125,16 @@ def run_onliner():
             print(f"Logged in as {username}#{discriminator} ({userid}).")
         else:
             continue
+        
+        # Cria uma nova thread para cada token
+        t = Thread(target=onliner, args=(token, status, custom_status, channel_id, guild_id))
+        t.start()
+        threads.append(t)
+    
+    # Aguarda todas as threads finalizarem (em execução contínua)
+    for t in threads:
+        t.join()
 
-        onliner(token, status, custom_status)
-
-        if config["join_call"]:
-            join_voice_channel(token, channel_id, guild_id)
-
-channel_id = "1305648119173615626"
-guild_id = "1226910384569585664"
-
+# Inicia o servidor para manter vivo
 keep_alive()
 run_onliner()
