@@ -5,7 +5,8 @@ import time
 import requests
 import websocket
 from threading import Thread
-from keep_alive import keep_alive  # Certifique-se de que este módulo está configurado para manter o servidor ativo.
+from keep_alive import keep_alive
+import schedule
 
 # Carrega tokens e configurações do ambiente
 def load_tokens():
@@ -24,7 +25,7 @@ def load_tokens():
                 "custom_status": custom_status,
                 "join_call": join_call,
                 "channel_id": channel_id,
-                "guild_id": guild_id
+                "guild_id": guild_id,
             })
     return tokens_config
 
@@ -41,6 +42,43 @@ def validate_token(token):
         print(f"[ERROR] Invalid token: {token}")
         return None
     return validate.json()
+
+# Obtém o application_id automaticamente
+def get_application_id(token):
+    headers = {"Authorization": token, "Content-Type": "application/json"}
+    response = requests.get("https://discord.com/api/v9/applications/@me", headers=headers)
+    if response.status_code == 200:
+        return response.json()["id"]
+    else:
+        print(f"[ERROR] Failed to fetch application ID for token {token[:10]}... Error: {response.status_code}")
+        return None
+
+# Envia o comando /daily como interação
+def send_daily_interaction(token, channel_id):
+    application_id = get_application_id(token)
+    if not application_id:
+        print(f"[ERROR] Could not send /daily. Application ID is missing.")
+        return
+
+    url = "https://discord.com/api/v9/interactions"
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "type": 2,  # Tipo 2 é para comandos Slash
+        "application_id": application_id,
+        "channel_id": channel_id,
+        "data": {
+            "name": "daily",  # Nome do comando
+            "type": 1  # Tipo do comando Slash
+        }
+    }
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 204:
+        print(f"[SUCCESS] Sent /daily command in channel {channel_id}.")
+    else:
+        print(f"[ERROR] Failed to send /daily command in channel {channel_id}. Error: {response.status_code} - {response.text}")
 
 # Mantém o bot online e envia batidas de coração
 def onliner(token, status, custom_status, channel_id=None, guild_id=None):
@@ -115,7 +153,6 @@ def run_onliner():
         status = config["status"]
         custom_status = config["custom_status"]
         channel_id = config.get("channel_id")
-        guild_id = config.get("guild_id")
         
         userinfo = validate_token(token)
         if userinfo:
@@ -126,14 +163,19 @@ def run_onliner():
         else:
             continue
         
-        # Cria uma nova thread para cada token
-        t = Thread(target=onliner, args=(token, status, custom_status, channel_id, guild_id))
+        # Cria uma nova thread para manter o bot online
+        t = Thread(target=onliner, args=(token, status, custom_status, channel_id))
         t.start()
         threads.append(t)
-    
+
+        # Agenda o envio do comando /daily
+        if channel_id:
+            schedule.every().day.at("14:00").do(send_daily_interaction, token=token, channel_id=channel_id)
+
     # Aguarda todas as threads finalizarem (em execução contínua)
-    for t in threads:
-        t.join()
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 # Inicia o servidor para manter vivo
 keep_alive()
