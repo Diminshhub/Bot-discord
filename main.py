@@ -180,5 +180,5 @@ schedule_daily()
 # Loop para manter o bot ativo e executar agendamentos
 while True:
     schedule.run_pending()  # Verifica e executa as tarefas agendadas
-    time.sleep(60)  # Aguardar 1 minuto entre verificações
+    time.sleep(45)  # Aguardar 1 minuto entre verificações
     run_onliner()  # Manter o bot online e funcionando
