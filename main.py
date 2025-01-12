@@ -170,7 +170,7 @@ def run_onliner():
 
         # Agenda o envio do comando /daily
         if channel_id:
-            schedule.every().day.at("14:00").do(send_daily_interaction, token=token, channel_id=channel_id)
+            schedule.every().day.at("14:08").do(send_daily_interaction, token=token, channel_id=channel_id)
 
     # Aguarda todas as threads finalizarem (em execução contínua)
     while True:
@@ -180,3 +180,4 @@ def run_onliner():
 # Inicia o servidor para manter vivo
 keep_alive()
 run_onliner()
+    
